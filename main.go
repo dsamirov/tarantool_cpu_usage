@@ -18,16 +18,20 @@ import (
 )
 
 type CPUStat struct {
-	PPID       string
 	PID        string
 	ThreadName string
 	Usage      float64
 }
 
+type ProcessInfo struct {
+	PPID         string
+	InstanceName string
+}
+
 var (
 	cpu = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "tarantool_cpu_usage",
-	}, []string{"ppid", "thread_name"})
+	}, []string{"ppid", "instance_name", "thread_name"})
 )
 
 func init() {
@@ -65,18 +69,21 @@ func getStat(pids string) {
 		log.Fatalf("cmd.Run: %v, err: %s", err, outErr.String())
 	}
 
-	ppidMap := getPPIDMap(pids)
+	processInfo := getProcessInfo(pids)
 
 	scan := bufio.NewScanner(bytes.NewReader(out.Bytes()))
 	for scan.Scan() {
 		line := scan.Text()
 
 		stat := parsePayload(strings.Split(line, " "))
-		stat.PPID = ppidMap[stat.PID]
+		if processInfo[stat.PID].PPID == "" {
+			continue
+		}
 
 		cpu.With(prometheus.Labels{
-			"ppid":        stat.PPID,
-			"thread_name": stat.ThreadName,
+			"ppid":     processInfo[stat.PID].PPID,
+			"instance_name": processInfo[stat.PID].InstanceName,
+			"thread_name":   stat.ThreadName,
 		}).Set(stat.Usage)
 	}
 }
@@ -113,11 +120,11 @@ func parsePayload(payload []string) CPUStat {
 	return result
 }
 
-func getPPIDMap(pids string) map[string]string {
+func getProcessInfo(pids string) map[string]ProcessInfo {
 	var out bytes.Buffer
 	var outErr bytes.Buffer
 
-	cmd := exec.Command("bash", "-c", fmt.Sprintf("ps -T -p %s -o pid,spid | grep -v \"PID\"", pids))
+	cmd := exec.Command("bash", "-c", fmt.Sprintf("ps -T -p %s -o pid,spid,command | grep -vE \"PID|tarantoolctl\"", pids))
 	cmd.Stdout = &out
 	cmd.Stderr = &outErr
 
@@ -125,7 +132,7 @@ func getPPIDMap(pids string) map[string]string {
 		log.Fatalf("cmd.Run: %v, err: %s", err, outErr.String())
 	}
 
-	result := make(map[string]string)
+	result := make(map[string]ProcessInfo)
 
 	scan := bufio.NewScanner(bytes.NewReader(out.Bytes()))
 	for scan.Scan() {
@@ -133,24 +140,33 @@ func getPPIDMap(pids string) map[string]string {
 
 		data := strings.Split(line, " ")
 
-		var ppid, pid string
+		var (
+			pid string
+			pi ProcessInfo
+		)
+
 		for _, column := range data {
 			if column == "" {
 				continue
 			}
 
-			if ppid == "" {
-				ppid = column
+			if pi.PPID == "" {
+				pi.PPID = column
 				continue
 			}
 
 			if pid == "" {
 				pid = column
+				continue
+			}
+
+			if pi.InstanceName == "" && strings.Index(column, ".lua") != -1 {
+				pi.InstanceName = column
 				break
 			}
 		}
 
-		result[pid] = ppid
+		result[pid] = pi
 	}
 
 	return result
