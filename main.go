@@ -69,6 +69,8 @@ func getStat(pids string) {
 		log.Fatalf("cmd.Run: %v, err: %s", err, outErr.String())
 	}
 
+	cpu.Reset()
+
 	processInfo := getProcessInfo(pids)
 
 	scan := bufio.NewScanner(bytes.NewReader(out.Bytes()))
